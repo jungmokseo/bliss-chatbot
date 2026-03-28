@@ -85,7 +85,40 @@ function requireAuth(req, res, next) {
 // ═══════════════════════════════════════════════════════════
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: '4.1.0', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', version: '4.2.0', timestamp: new Date().toISOString() });
+});
+
+// ─── 디버그: Gemini API 진단 (배포 후 삭제 가능) ────────
+app.get('/api/debug/gemini', async (req, res) => {
+  const info = {
+    hasApiKey: !!GEMINI_API_KEY,
+    apiKeyPrefix: GEMINI_API_KEY ? GEMINI_API_KEY.substring(0, 10) + '...' : 'NOT SET',
+    model: GEMINI_MODEL,
+    nodeVersion: process.version,
+  };
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: 'Reply with just OK' }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 10 }
+      })
+    });
+    const result = await response.json();
+    info.apiStatus = response.status;
+    if (result.error) {
+      info.error = result.error;
+    } else {
+      info.response = result.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'empty';
+    }
+  } catch (err) {
+    info.fetchError = err.message;
+  }
+
+  res.json(info);
 });
 
 // ─── 인증 ─────────────────────────────────────────────
@@ -970,22 +1003,29 @@ ${historyContext}
 async function geminiCall(prompt, temperature = 0.1, maxTokens = 300) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature, maxOutputTokens: maxTokens }
-    })
-  });
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature, maxOutputTokens: maxTokens }
+      })
+    });
 
-  const result = await response.json();
-  if (result.error) {
-    console.error('Gemini API error:', result.error);
+    const result = await response.json();
+    if (result.error) {
+      console.error('Gemini API error:', result.error);
+      await logError('geminiCall', `Gemini API: ${result.error.message || JSON.stringify(result.error)}`, `Model: ${GEMINI_MODEL}`);
+      return null;
+    }
+
+    return result.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  } catch (err) {
+    console.error('geminiCall fetch error:', err.message);
+    await logError('geminiCall', err.message, err.stack);
     return null;
   }
-
-  return result.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
 }
 
 // ═══════════════════════════════════════════════════════════
