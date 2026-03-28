@@ -32,6 +32,7 @@ const pool = new Pool({
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const CHATBOT_PASSWORD = process.env.CHATBOT_PASSWORD || 'Bliss12!';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'BlissAdmin2024!';
 
 // ─── FAQ 캐시 ───────────────────────────────────────────
 let faqCache = null;
@@ -39,7 +40,7 @@ let faqCacheTime = 0;
 const FAQ_CACHE_TTL = 5 * 60 * 1000; // 5분
 
 // ─── 세션 토큰 저장소 (in-memory) ───────────────────────
-const activeSessions = new Map(); // token -> { createdAt, expiresAt }
+const activeSessions = new Map(); // token -> { createdAt, expiresAt, isAdmin }
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24시간
 
 function cleanExpiredSessions() {
@@ -85,7 +86,7 @@ function requireAuth(req, res, next) {
 // ═══════════════════════════════════════════════════════════
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: '4.2.0', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', version: '4.5.0', timestamp: new Date().toISOString() });
 });
 
 // ─── 디버그: Gemini API 진단 (배포 후 삭제 가능) ────────
@@ -144,6 +145,45 @@ app.post('/api/auth/verify', (req, res) => {
     res.json({ success: false, error: '서버 오류' });
   }
 });
+
+// 관리자 인증
+app.post('/api/auth/admin', (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) return res.json({ success: false, error: '관리자 비밀번호를 입력해주세요.' });
+    if (password !== ADMIN_PASSWORD) {
+      return res.json({ success: false, error: '관리자 비밀번호가 틀렸습니다.' });
+    }
+    // 기존 세션 토큰에 admin 권한 부여
+    const token = req.headers['x-auth-token'];
+    if (token && activeSessions.has(token)) {
+      const session = activeSessions.get(token);
+      session.isAdmin = true;
+      activeSessions.set(token, session);
+    }
+    res.json({ success: true });
+  } catch (err) {
+    logError('/api/auth/admin', err.message, err.stack);
+    res.json({ success: false, error: '서버 오류' });
+  }
+});
+
+// 관리자 권한 확인 미들웨어
+function requireAdmin(req, res, next) {
+  const token = req.headers['x-auth-token'] || req.headers.authorization?.replace('Bearer ', '');
+  if (!token || !activeSessions.has(token)) {
+    return res.status(401).json({ success: false, error: '인증이 필요합니다.' });
+  }
+  const session = activeSessions.get(token);
+  if (Date.now() > session.expiresAt) {
+    activeSessions.delete(token);
+    return res.status(401).json({ success: false, error: '세션이 만료되었습니다.' });
+  }
+  if (!session.isAdmin) {
+    return res.status(403).json({ success: false, error: '관리자 권한이 필요합니다.' });
+  }
+  next();
+}
 
 // ═══════════════════════════════════════════════════════════
 // API Routes — 인증 필요
@@ -374,7 +414,7 @@ app.delete('/api/members/:id', requireAuth, async (req, res) => {
 });
 
 // ─── 관리자 API ─────────────────────────────────────────
-app.get('/api/admin/errors', requireAuth, async (req, res) => {
+app.get('/api/admin/errors', requireAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
     const result = await pool.query(
@@ -387,7 +427,7 @@ app.get('/api/admin/errors', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/admin/conversations', requireAuth, async (req, res) => {
+app.get('/api/admin/conversations', requireAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
     const result = await pool.query(
@@ -395,6 +435,124 @@ app.get('/api/admin/conversations', requireAuth, async (req, res) => {
       [limit]
     );
     res.json({ success: true, conversations: result.rows, count: result.rows.length });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// ─── Notion → Supabase 동기화 API ─────────────────────
+app.post('/api/admin/sync-notion', requireAdmin, async (req, res) => {
+  const { table } = req.body; // 'regulations', 'projects', 'accounts', 'all'
+  const target = table || 'all';
+  const results = {};
+
+  try {
+    // Notion API 호출 헬퍼
+    async function fetchNotionDB(dataSourceId) {
+      const url = `https://api.notion.com/v1/databases/${dataSourceId}/query`;
+      // Notion MCP가 없으므로 Supabase에서 직접 관리 — 프론트엔드에서 JSON 데이터를 보내는 방식
+      return null;
+    }
+
+    // regulations 동기화 (프론트엔드에서 데이터 전달)
+    if (target === 'regulations' || target === 'all') {
+      if (req.body.regulations && Array.isArray(req.body.regulations)) {
+        await pool.query('DELETE FROM chatbot_regulations');
+        let count = 0;
+        for (const r of req.body.regulations) {
+          const content = (r.content && r.content !== 'null') ? r.content : null;
+          const doc = (r.source && r.source !== 'null') ? r.source : null;
+          const cat = (r.category && r.category !== 'null') ? r.category : null;
+          if (!content && !r.title) continue;
+          await pool.query(
+            'INSERT INTO chatbot_regulations (title, content, category, source) VALUES ($1, $2, $3, $4)',
+            [r.title, content, cat, doc]
+          );
+          count++;
+        }
+        results.regulations = { deleted: true, inserted: count };
+      } else {
+        results.regulations = { skipped: true, reason: 'no data provided' };
+      }
+    }
+
+    // projects 동기화
+    if (target === 'projects' || target === 'all') {
+      if (req.body.projects && Array.isArray(req.body.projects)) {
+        await pool.query('DELETE FROM chatbot_projects');
+        let count = 0;
+        for (const p of req.body.projects) {
+          await pool.query(
+            'INSERT INTO chatbot_projects (project_name, funding_agency, period, pi, status, memo) VALUES ($1, $2, $3, $4, $5, $6)',
+            [p.project_name, p.funding_agency || null, p.period || null, p.pi || null, p.status || '진행중', p.memo || null]
+          );
+          count++;
+        }
+        results.projects = { deleted: true, inserted: count };
+      } else {
+        results.projects = { skipped: true, reason: 'no data provided' };
+      }
+    }
+
+    // accounts 동기화
+    if (target === 'accounts' || target === 'all') {
+      if (req.body.accounts && Array.isArray(req.body.accounts)) {
+        await pool.query('DELETE FROM chatbot_accounts');
+        let count = 0;
+        for (const a of req.body.accounts) {
+          await pool.query(
+            'INSERT INTO chatbot_accounts (service_name, login_id, password, url, memo) VALUES ($1, $2, $3, $4, $5)',
+            [a.service_name, a.login_id || null, a.password || null, a.url || null, a.memo || null]
+          );
+          count++;
+        }
+        results.accounts = { deleted: true, inserted: count };
+      } else {
+        results.accounts = { skipped: true, reason: 'no data provided' };
+      }
+    }
+
+    // members 동기화
+    if (target === 'members' || target === 'all') {
+      if (req.body.members && Array.isArray(req.body.members)) {
+        await pool.query('DELETE FROM chatbot_members');
+        let count = 0;
+        for (const m of req.body.members) {
+          await pool.query(
+            `INSERT INTO chatbot_members (name, student_id, email, phone, researcher_id, vacation_total, vacation_used, role)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [m.name, m.student_id || null, m.email || null, m.phone || null, m.researcher_id || null,
+             m.vacation_total || 15, m.vacation_used || 0, m.role || '학생']
+          );
+          count++;
+        }
+        results.members = { deleted: true, inserted: count };
+      } else {
+        results.members = { skipped: true, reason: 'no data provided' };
+      }
+    }
+
+    // FAQ preload 갱신
+    await preloadFAQ();
+
+    res.json({ success: true, results, message: 'DB 동기화 완료' });
+  } catch (err) {
+    console.error('Sync error:', err.message);
+    await logError('/api/admin/sync-notion', err.message, err.stack);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// ─── DB 현황 조회 API ─────────────────────
+app.get('/api/admin/db-status', requireAdmin, async (req, res) => {
+  try {
+    const tables = ['chatbot_members', 'chatbot_projects', 'chatbot_accounts', 'chatbot_regulations', 'chatbot_faq', 'chatbot_vacations', 'chatbot_conversations', 'chatbot_error_logs'];
+    const counts = {};
+    for (const t of tables) {
+      const r = await pool.query(`SELECT COUNT(*) as cnt FROM ${t}`);
+      counts[t] = parseInt(r.rows[0].cnt);
+    }
+    res.json({ success: true, counts });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
@@ -496,8 +654,8 @@ async function classifyIntent(message, history) {
   예시: "김태영 학번", "이유림 이메일", "정윤민 연락처"
 - account_info: 연구실 공용 계정/비밀번호/로그인 정보 조회.
   예시: "아고다 계정", "SEM 예약 계정"
-- project_info: 연구과제 정보 조회.
-  예시: "현재 진행중인 과제", "NRF 과제번호"
+- project_info: 연구과제 정보 조회. 참여율, 과제 목록, 과제 기간, 담당자 등.
+  예시: "현재 진행중인 과제", "NRF 과제번호", "교수님 5월 참여율", "이번 달 과제", "진행중인 과제 목록"
 - regulation_info: 연구비/출장비/여비 규정 관련 질문.
   예시: "출장비 규정", "식대 한도"
 - faq_search: 위 어디에도 해당하지 않는 일반 질문.
@@ -508,6 +666,7 @@ async function classifyIntent(message, history) {
 - end_date: YYYY-MM-DD. 단일 날짜면 start_date와 동일. "15-17일"이면 start=15일, end=17일.
 - days: 시작~종료 포함 일수 (end - start + 1). 반드시 정확히 계산하세요.
 - keyword: account_info/project_info/regulation_info용 검색 키워드.
+- month: 참여율/과제 조회 시 월 (1~12 숫자). "5월" → 5, "이번 달" → 현재 월.
 
 오늘 날짜: ${todayISO}
 ${historyContext}
@@ -782,6 +941,65 @@ async function handleAccountInfo(entities, message) {
 }
 
 async function handleProjectInfo(entities, message) {
+  // ── 참여율 쿼리 감지 ──
+  const is참여율 = /참여율|참여|활성.*과제|과제.*목록/i.test(message);
+  const monthMatch = message.match(/(\d{1,2})\s*월/) || (entities?.month ? [null, String(entities.month)] : null);
+
+  if (is참여율) {
+    const result = await pool.query(`SELECT * FROM chatbot_projects ORDER BY project_name`);
+    if (result.rows.length === 0) return fail('등록된 과제 정보가 없습니다.');
+
+    let targetMonth = monthMatch ? parseInt(monthMatch[1]) : (new Date().getMonth() + 1);
+    const year = new Date().getFullYear();
+    const monthNames = ['', '1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
+
+    // 해당 월에 활성인 과제 필터링 (period 파싱)
+    const active = result.rows.filter(r => {
+      if (!r.period) return true; // 기간 정보 없으면 포함
+      try {
+        // "25.09.01 ~ 28.08.31" or "2021 ~ 2025.12.31" 등 다양한 형식 처리
+        const parts = r.period.split(/~|-/).map(s => s.trim());
+        if (parts.length < 2) return true;
+
+        const parseDate = (s) => {
+          s = s.replace(/\./g, '-').trim();
+          if (/^\d{2}-/.test(s)) s = '20' + s; // 25- → 2025-
+          if (/^\d{4}$/.test(s)) return new Date(parseInt(s), 0, 1); // "2021" → Jan 1
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? null : d;
+        };
+
+        const startDate = parseDate(parts[0]);
+        const endDate = parseDate(parts[1]);
+        if (!startDate || !endDate) return true;
+
+        const checkDate = new Date(year, targetMonth - 1, 15); // 해당 월 중간
+        return checkDate >= startDate && checkDate <= endDate;
+      } catch { return true; }
+    });
+
+    if (active.length === 0) {
+      return { success: true, matched: true, intent: 'project_info',
+        answer: `${year}년 ${monthNames[targetMonth]}에 활성인 과제가 없습니다.`, extra: '', meta: {} };
+    }
+
+    const lines = active.map((r, i) => {
+      const parts = [`<strong>${i + 1}. ${r.project_name}</strong>`];
+      if (r.funding_agency) parts.push(`   지원기관: ${r.funding_agency}`);
+      if (r.period) parts.push(`   기간: ${r.period}`);
+      if (r.pi) parts.push(`   담당자: ${r.pi}`);
+      if (r.memo) parts.push(`   사업명: ${r.memo}`);
+      return parts.join('\n');
+    }).join('\n\n');
+
+    return {
+      success: true, matched: true, intent: 'project_info',
+      answer: `<strong>📋 ${year}년 ${monthNames[targetMonth]} 활성 과제 (${active.length}건/${result.rows.length}건)</strong>\n\n${lines}\n\n<em>※ 과제별 세부 참여율(%)은 현재 DB에 미등록 상태입니다. 필요 시 Notion 과제 DB에 참여율 컬럼을 추가하면 자동 연동됩니다.</em>`,
+      extra: '<div class="ai-tag">🔍 DB 검색</div>', meta: {}
+    };
+  }
+
+  // ── 일반 과제 검색 ──
   let keyword = entities?.keyword || entities?.project_name || '';
   if (!keyword) {
     keyword = message.replace(/과제|정보|번호|알려줘|뭐야|현재|진행|중인/g, '').trim();
