@@ -112,6 +112,7 @@ app.get('/api/debug/gemini', async (req, res) => {
     if (result.error) {
       info.error = result.error;
     } else {
+      info.rawResponse = result;
       info.response = result.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'empty';
     }
   } catch (err) {
