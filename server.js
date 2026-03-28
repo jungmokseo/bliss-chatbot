@@ -1,12 +1,15 @@
 // ═══════════════════════════════════════════════════════════
-// BLISS Lab FAQ 챗봇 v4.0 — Supabase + Gemini AI
+// BLISS Lab FAQ 챗봇 v4.1 — Supabase + Gemini AI
 // ResearchFlow Validation Application
+// + Server-side Auth, Conversation History, FAQ/Member CRUD,
+//   Error Logging, Self-Keepalive
 // ═══════════════════════════════════════════════════════════
 
 const express = require('express');
 const { Pool } = require('pg');
 const fetch = require('node-fetch');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -28,42 +31,116 @@ const pool = new Pool({
 // ─── 설정 ───────────────────────────────────────────────
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const CHATBOT_PASSWORD = process.env.CHATBOT_PASSWORD || 'Bliss12!';
 
 // ─── FAQ 캐시 ───────────────────────────────────────────
 let faqCache = null;
 let faqCacheTime = 0;
 const FAQ_CACHE_TTL = 5 * 60 * 1000; // 5분
 
+// ─── 세션 토큰 저장소 (in-memory) ───────────────────────
+const activeSessions = new Map(); // token -> { createdAt, expiresAt }
+const SESSION_TTL = 24 * 60 * 60 * 1000; // 24시간
+
+function cleanExpiredSessions() {
+  const now = Date.now();
+  for (const [token, session] of activeSessions) {
+    if (now > session.expiresAt) activeSessions.delete(token);
+  }
+}
+setInterval(cleanExpiredSessions, 60 * 60 * 1000); // 1시간마다 정리
+
 // ═══════════════════════════════════════════════════════════
-// API Routes
+// 에러 로깅 미들웨어
+// ═══════════════════════════════════════════════════════════
+async function logError(endpoint, errorMessage, stack) {
+  try {
+    await pool.query(
+      `INSERT INTO chatbot_error_logs (endpoint, error_message, stack) VALUES ($1, $2, $3)`,
+      [endpoint, errorMessage, stack || null]
+    );
+  } catch (e) {
+    console.error('Error logging failed:', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 인증 미들웨어
+// ═══════════════════════════════════════════════════════════
+function requireAuth(req, res, next) {
+  const token = req.headers['x-auth-token'] || req.headers.authorization?.replace('Bearer ', '');
+  if (!token || !activeSessions.has(token)) {
+    return res.status(401).json({ success: false, error: '인증이 필요합니다.' });
+  }
+  const session = activeSessions.get(token);
+  if (Date.now() > session.expiresAt) {
+    activeSessions.delete(token);
+    return res.status(401).json({ success: false, error: '세션이 만료되었습니다.' });
+  }
+  next();
+}
+
+// ═══════════════════════════════════════════════════════════
+// API Routes — 공개
 // ═══════════════════════════════════════════════════════════
 
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', version: '4.1.0', timestamp: new Date().toISOString() });
+});
+
+// ─── 인증 ─────────────────────────────────────────────
+app.post('/api/auth/verify', (req, res) => {
   try {
-    const result = await pool.query('SELECT NOW()');
-    res.json({ status: 'ok', version: '4.0.0', db: 'connected', time: result.rows[0].now });
+    const { password } = req.body;
+    if (!password) return res.json({ success: false, error: '비밀번호를 찅력해주세요.' });
+
+    if (password !== CHATBOT_PASSWORD) {
+      return res.json({ success: false, error: '비밀번호가 틀렸습니다.' });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    activeSessions.set(token, {
+      createdAt: Date.now(),
+      expiresAt: Date.now() + SESSION_TTL
+    });
+
+    res.json({ success: true, token });
   } catch (err) {
-    res.json({ status: 'error', db: 'disconnected', error: err.message });
+    logError('/api/auth/verify', err.message, err.stack);
+    res.json({ success: false, error: '서버 오류' });
   }
 });
 
+// ═══════════════════════════════════════════════════════════
+// API Routes — 인증 필요
+// ═══════════════════════════════════════════════════════════
+
 // ─── 통합 메시지 처리 ──────────────────────────────────
-app.post('/api/message', async (req, res) => {
+app.post('/api/message', requireAuth, async (req, res) => {
   try {
     const { message } = req.body;
     if (!message || !message.trim()) {
       return res.json({ success: false, error: 'Empty message' });
     }
-    const result = await handleMessage(message.trim());
+
+    // 최근 대화 5개 불러오기
+    const history = await getRecentConversations(5);
+
+    const result = await handleMessage(message.trim(), history);
+
+    // 대화 저장
+    await saveConversation(message.trim(), result.answer || '', result.intent || 'unknown');
+
     res.json(result);
   } catch (err) {
     console.error('POST /api/message error:', err.message);
+    await logError('/api/message', err.message, err.stack);
     res.json({ success: false, error: '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
   }
 });
 
-// ─── 휴가 전용 API (안정적 직접 호출) ──────────────────
-app.post('/api/vacation/register', async (req, res) => {
+// ─── 휴가 전용 API ──────────────────────────────────────
+app.post('/api/vacation/register', requireAuth, async (req, res) => {
   try {
     const { name, start_date, end_date, days, memo } = req.body;
     if (!name || !start_date) {
@@ -72,12 +149,12 @@ app.post('/api/vacation/register', async (req, res) => {
     const result = await vacationRegister(name, start_date, end_date || start_date, days || 1, memo);
     res.json(result);
   } catch (err) {
-    console.error('POST /api/vacation/register error:', err.message);
+    await logError('/api/vacation/register', err.message, err.stack);
     res.json({ success: false, error: err.message });
   }
 });
 
-app.get('/api/vacation/query', async (req, res) => {
+app.get('/api/vacation/query', requireAuth, async (req, res) => {
   try {
     const { name } = req.query;
     if (!name) return res.json({ success: false, error: '이름이 필요합니다.' });
@@ -88,7 +165,7 @@ app.get('/api/vacation/query', async (req, res) => {
   }
 });
 
-app.get('/api/vacation/all', async (req, res) => {
+app.get('/api/vacation/all', requireAuth, async (req, res) => {
   try {
     const result = await vacationAll();
     res.json(result);
@@ -97,7 +174,7 @@ app.get('/api/vacation/all', async (req, res) => {
   }
 });
 
-app.post('/api/vacation/cancel', async (req, res) => {
+app.post('/api/vacation/cancel', requireAuth, async (req, res) => {
   try {
     const { id } = req.body;
     if (!id) return res.json({ success: false, error: 'id가 필요합니다.' });
@@ -108,7 +185,7 @@ app.post('/api/vacation/cancel', async (req, res) => {
   }
 });
 
-app.get('/api/vacation/list', async (req, res) => {
+app.get('/api/vacation/list', requireAuth, async (req, res) => {
   try {
     const { name } = req.query;
     if (!name) return res.json({ success: false, error: '이름이 필요합니다.' });
@@ -119,8 +196,8 @@ app.get('/api/vacation/list', async (req, res) => {
   }
 });
 
-// ─── FAQ API ────────────────────────────────────────────
-app.get('/api/faq', async (req, res) => {
+// ─── FAQ API (CRUD) ───────────────────────────────────────
+app.get('/api/faq', requireAuth, async (req, res) => {
   try {
     const faqs = await getCachedFaq();
     res.json({ success: true, faq: faqs, count: faqs.length });
@@ -129,30 +206,206 @@ app.get('/api/faq', async (req, res) => {
   }
 });
 
-// ─── 구성원 목록 ────────────────────────────────────────
-app.get('/api/members', async (req, res) => {
+app.post('/api/faq', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT name, role FROM chatbot_members WHERE active = true ORDER BY name');
+    const { question, answer, keywords, category, answered_by } = req.body;
+    if (!question) return res.json({ success: false, error: '질문은 필수입니다.' });
+    const status = answer ? '답변완료' : '답변대기';
+    const result = await pool.query(
+      `INSERT INTO chatbot_faq (question, answer, keywords, category, answered_by, answered_date, status)
+       VALUES ($1, $2, $3, $4, $5, CASE WHEN $2 IS NOT NULL THEN CURRENT_DATE ELSE NULL END, $6)
+       RETURNING id`,
+      [question, answer || null, keywords || null, category || null, answered_by || null, status]
+    );
+    faqCache = null; // 캐시 무효화
+    res.json({ success: true, id: result.rows[0].id, message: 'FAQ가 추가되었습니다.' });
+  } catch (err) {
+    await logError('POST /api/faq', err.message, err.stack);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/faq/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { question, answer, keywords, category, answered_by, status } = req.body;
+    const result = await pool.query(
+      `UPDATE chatbot_faq SET
+        question = COALESCE($1, question),
+        answer = COALESCE($2, answer),
+        keywords = COALESCE($3, keywords),
+        category = COALESCE($4, category),
+        answered_by = COALESCE($5, answered_by),
+        status = COALESCE($6, status),
+        answered_date = CASE WHEN $2 IS NOT NULL THEN CURRENT_DATE ELSE answered_date END
+       WHERE id = $7 RETURNING id`,
+      [question, answer, keywords, category, answered_by, status, id]
+    );
+    if (result.rows.length === 0) return res.json({ success: false, error: 'FAQ를 찾을 수 없습니다.' });
+    faqCache = null;
+    res.json({ success: true, message: 'FAQ가 수정되었습니다.' });
+  } catch (err) {
+    await logError('PUT /api/faq/:id', err.message, err.stack);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/faq/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('DELETE FROM chatbot_faq WHERE id = $1 RETURNING id', [id]);
+    if (result.rows.length === 0) return res.json({ success: false, error: 'FAQ를 찾을 수 없습니다.' });
+    faqCache = null;
+    res.json({ success: true, message: 'FAQ가 삭제되었습니다.' });
+  } catch (err) {
+    await logError('DELETE /api/faq/:id', err.message, err.stack);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/faq/unanswered', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, question, created_at FROM chatbot_faq WHERE status = '답변대기' ORDER BY created_at DESC`
+    );
+    res.json({ success: true, unanswered: result.rows, count: result.rows.length });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// ─── 구성원 API (CRUD) ────────────────────────────────────
+app.get('/api/members', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, name, student_id, researcher_id, email, phone, role, annual_leave, active FROM chatbot_members ORDER BY name'
+    );
     res.json({ success: true, members: result.rows });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
 });
 
-// SPA fallback
+app.post('/api/members', requireAuth, async (req, res) => {
+  try {
+    const { name, student_id, researcher_id, email, phone, role, annual_leave } = req.body;
+    if (!name) return res.json({ success: false, error: '이름은 필수입니다.' });
+    const result = await pool.query(
+      `INSERT INTO chatbot_members (name, student_id, researcher_id, email, phone, role, annual_leave)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [name, student_id || null, researcher_id || null, email || null, phone || null, role || '대학원생', annual_leave || 12]
+    );
+    res.json({ success: true, id: result.rows[0].id, message: `${name} 님이 추가되었습니다.` });
+  } catch (err) {
+    await logError('POST /api/members', err.message, err.stack);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/members/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, student_id, researcher_id, email, phone, role, annual_leave, active } = req.body;
+    const result = await pool.query(
+      `UPDATE chatbot_members SET
+        name = COALESCE($1, name),
+        student_id = COALESCE($2, student_id),
+        researcher_id = COALESCE($3, researcher_id),
+        email = COALESCE($4, email),
+        phone = COALESCE($5, phone),
+        role = COALESCE($6, role),
+        annual_leave = COALESCE($7, annual_leave),
+        active = COALESCE($8, active)
+       WHERE id = $9 RETURNING id, name`,
+      [name, student_id, researcher_id, email, phone, role, annual_leave, active, id]
+    );
+    if (result.rows.length === 0) return res.json({ success: false, error: '구성원을 찾을 수 없습니다.' });
+    res.json({ success: true, message: `${result.rows[0].name} 님의 정보가 수정되었습니다.` });
+  } catch (err) {
+    await logError('PUT /api/members/:id', err.message, err.stack);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/members/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('UPDATE chatbot_members SET active = false WHERE id = $1 RETURNING name', [id]);
+    if (result.rows.length === 0) return res.json({ success: false, error: '구성원을 찾을 수 없습니다.' });
+    res.json({ success: true, message: `${result.rows[0].name} 님이 비활성화되었습니다.` });
+  } catch (err) {
+    await logError('DELETE /api/members/:id', err.message, err.stack);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// ─── 관리자 API ─────────────────────────────────────────
+app.get('/api/admin/errors', requireAuth, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const result = await pool.query(
+      `SELECT id, endpoint, error_message, created_at FROM chatbot_error_logs ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ success: true, errors: result.rows, count: result.rows.length });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/conversations', requireAuth, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const result = await pool.query(
+      `SELECT id, user_message, bot_response, intent, created_at FROM chatbot_conversations ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ success: true, conversations: result.rows, count: result.rows.length });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// SPA fallback — admin, chat 등 모두 index.html로
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ═══════════════════════════════════════════════════════════
+// 대화 히스토리 관리
+// ═══════════════════════════════════════════════════════════
+async function saveConversation(userMessage, botResponse, intent) {
+  try {
+    await pool.query(
+      `INSERT INTO chatbot_conversations (user_message, bot_response, intent) VALUES ($1, $2, $3)`,
+      [userMessage, (botResponse || '').substring(0, 2000), intent]
+    );
+  } catch (err) {
+    console.error('대화 저장 실패:', err.message);
+  }
+}
+
+async function getRecentConversations(limit = 5) {
+  try {
+    const result = await pool.query(
+      `SELECT user_message, bot_response, intent FROM chatbot_conversations ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    return result.rows.reverse(); // 시간순 정렬
+  } catch (err) {
+    return [];
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // 통합 메시지 핸들러 — Gemini Intent 분류 → 실행
 // ═══════════════════════════════════════════════════════════
-async function handleMessage(message) {
+async function handleMessage(message, history) {
   // Step 1: Gemini로 intent 분류
-  const classification = await classifyIntent(message);
+  const classification = await classifyIntent(message, history);
 
   if (!classification || !classification.intent) {
-    return await handleFaqSearch(message);
+    return await handleFaqSearch(message, history);
   }
 
   // Step 2: intent별 실행
@@ -173,49 +426,57 @@ async function handleMessage(message) {
       return await handleRegulationInfo(classification.entities, message);
     case 'faq_search':
     default:
-      return await handleFaqSearch(message);
+      return await handleFaqSearch(message, history);
   }
 }
 
 // ═══════════════════════════════════════════════════════════
 // Gemini Intent 분류기
 // ═══════════════════════════════════════════════════════════
-async function classifyIntent(message) {
+async function classifyIntent(message, history) {
   if (!GEMINI_API_KEY) return null;
 
   const now = new Date();
   const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const year = now.getFullYear();
 
+  // 대화 히스토리 컨텍스트
+  let historyContext = '';
+  if (history && history.length > 0) {
+    historyContext = '\n\n최근 대화 히스토리 (참고용):\n' +
+      history.map(h => `사용자: ${h.user_message}\n봇: ${(h.bot_response || '').substring(0, 100)}`).join('\n---\n');
+  }
+
   const prompt = `당신은 한국 연구실 챗봇의 intent 분류기입니다.
 
-사용자 메시지를 분석하여 intent와 entity를 추출하세요.
+사용자 메시지를 분석하여 intent와 entity를 추추하세요.
 
 가능한 intent:
 - vacation_register: 휴가를 등록/신청/기록하려는 경우. "등록", "신청", "쓸게", "쓰겠습니다", "내다", "연차" 등의 표현 포함.
   예시: "정윤민 2월 27일 휴가 등록", "박시연 휴가 4월 15-17일 등록", "3월 5일 휴가 쓸게요 김태영", "김태영 3월 5일 연차"
-- vacation_query: 휴가 잔여일/사용현황을 조회하려는 경우. "조회", "남았", "며칠", "확인", "현황", "얼마나" 등.
+- vacation_query: 휴가 자여일/사용현황을 조회하려는 경우. "조회", "남았", "며칠", "확인", "현황", "얼마나" 등.
   예시: "홍길동 휴가 조회", "내 휴가 며칠 남았어?", "박시연 휴가 현황"
 - vacation_all: 전체 구성원의 휴가 현황 요약. "전체", "모든 사람" 등.
   예시: "전체 휴가 현황", "휴가 전체", "모든 학생 휴가"
-- member_info: 특정 구성원의 인적사항(학번, 이메일, 전화번호, 연구자등록번호 등) 조회.
+- member_info: 특정 구성원의 인적사항(m��번, 이메일, 전화번호, 연구자등록번호 등) 조회.
   예시: "김태영 학번", "이유림 이메일", "정윤민 연락처"
 - account_info: 연구실 공용 계정/비밀번호/로그인 정보 조회.
   예시: "아고다 계정", "SEM 예약 계정"
-- project_info: 연구과제 정보 조회.
+- project_info: 연군과제 정보 조회.
   예시: "현재 진행중인 과제", "NRF 과제번호"
 - regulation_info: 연구비/출장비/여비 규정 관련 질문.
   예시: "출장비 규정", "식대 한도"
 - faq_search: 위 어디에도 해당하지 않는 일반 질문.
 
 엔티티 추출 규칙:
-- name: 한국 이름 (2~4글자 한글) 또는 영문 이름. 메시지에서 사람 이름을 찾으세요.
+- name: 한국 이름 (2~4급자 한글) 또는 영문 이름. 메시지에서 사람 이름을 찾으세요.
 - start_date: YYYY-MM-DD 형식. 연도 없으면 ${year}년.
 - end_date: YYYY-MM-DD. 단일 날짜면 start_date와 동일. "15-17일"이면 start=15일, end=17일.
 - days: 시작~종료 포함 일수 (end - start + 1). 반드시 정확히 계산하세요.
 - keyword: account_info/project_info/regulation_info용 검색 키워드.
 
 오늘 날짜: ${todayISO}
+${historyContext}
 
 반드시 아래 JSON만 출력 (다른 텍스트 없이):
 {"intent":"<intent>","confidence":<0~1>,"entities":{...}}
@@ -239,7 +500,7 @@ async function classifyIntent(message) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 휴가 관리 — SQL 기반 (핵심 안정성 보장)
+// 휴가 관리 — SQL 기반 (핵시 안정성 보장)
 // ═══════════════════════════════════════════════════════════
 
 async function handleVacationRegisterAI(entities, originalMessage) {
@@ -255,17 +516,14 @@ async function handleVacationRegisterAI(entities, originalMessage) {
 }
 
 async function vacationRegister(name, startDate, endDate, days, memo) {
-  // 1. DB에 삽입
   await pool.query(
     `INSERT INTO chatbot_vacations (member_name, start_date, end_date, days, memo)
      VALUES ($1, $2, $3, $4, $5)`,
     [name, startDate, endDate, days, memo || null]
   );
 
-  // 2. 통계 조회
   const stats = await getVacationStats(name);
 
-  // 3. 날짜 포맷
   const sm = parseInt(startDate.split('-')[1]);
   const sd = parseInt(startDate.split('-')[2]);
   const ed = parseInt(endDate.split('-')[2]);
@@ -392,14 +650,12 @@ async function vacationListWithIds(name) {
 }
 
 async function getVacationStats(name) {
-  // 연간 할당일 조회
   const memberResult = await pool.query(
     `SELECT annual_leave FROM chatbot_members WHERE name = $1 LIMIT 1`,
     [name]
   );
   const annual = memberResult.rows.length > 0 ? memberResult.rows[0].annual_leave : 12;
 
-  // 사용 내역 조회
   const vacResult = await pool.query(
     `SELECT id, start_date::text, end_date::text, days, memo
      FROM chatbot_vacations
@@ -417,6 +673,7 @@ async function getVacationStats(name) {
     records: vacResult.rows
   };
 }
+
 // ═══════════════════════════════════════════════════════════
 // Jarvis DB 검색 (인적사항, 과제, 계정, 규정)
 // ═══════════════════════════════════════════════════════════
@@ -497,7 +754,6 @@ async function handleProjectInfo(entities, message) {
   }
 
   if (!keyword || keyword.length < 2) {
-    // 전체 리스트
     const result = await pool.query(`SELECT project_name, status FROM chatbot_projects ORDER BY project_name`);
     if (result.rows.length === 0) return fail('등록된 과제 정보가 없습니다.');
     const list = result.rows.map(r => `  • ${r.project_name} (${r.status})`).join('\n');
@@ -534,7 +790,7 @@ async function handleProjectInfo(entities, message) {
 async function handleRegulationInfo(entities, message) {
   let keyword = entities?.keyword || entities?.topic || '';
   if (!keyword) {
-    keyword = message.replace(/규정|매뉴얼|지침|알려줘|뭐야|어떻게|관련/g, '').trim();
+    keyword = message.replace(/규정|매뉴얼|지침|알려줘|ǭ�야|어떻게|관련/g, '').trim();
   }
   if (!keyword || keyword.length < 2) return fail('어떤 규정을 찾으시나요?\n\n예시: "출장비 규정" 또는 "식대 한도"');
 
@@ -558,7 +814,7 @@ async function handleRegulationInfo(entities, message) {
 
   return {
     success: true, matched: true, intent: 'regulation_info',
-    answer: `<strong>📖 규정/매뉴얼</strong> — "${keyword}"\n\n${lines}`,
+    answer: `<strong>📖 규정/욤뉴얼</strong> — "${keyword}"\n\n${lines}`,
     extra: '<div class="ai-tag">🔍 DB 검색</div>', meta: {}
   };
 }
@@ -567,17 +823,16 @@ async function handleRegulationInfo(entities, message) {
 // FAQ 검색 — Supabase + Gemini
 // ═══════════════════════════════════════════════════════════
 
-async function handleFaqSearch(query) {
+async function handleFaqSearch(query, history) {
   const faqs = await getCachedFaq();
   if (!faqs || faqs.length === 0) {
     return fail('FAQ 데이터를 로드할 수 없습니다.');
   }
 
   const relevant = filterRelevantFAQs(faqs, query);
-  const geminiAnswer = await callGeminiForFAQ(query, relevant);
+  const geminiAnswer = await callGeminiForFAQ(query, relevant, history);
 
   if (!geminiAnswer || geminiAnswer.answer === 'NO_MATCH') {
-    // 미답변 질문 등록
     await pool.query(
       `INSERT INTO chatbot_faq (question, status) VALUES ($1, '답변대기')`,
       [query]
@@ -585,7 +840,7 @@ async function handleFaqSearch(query) {
 
     return {
       success: true, matched: false,
-      answer: '이 질문에 대한 답변이 아직 FAQ에 없습니다.\n\n질문이 DB에 등록되었습니다. 답변이 추가되면 다음에는 바로 찾아드릴 수 있습니다.',
+      answer: '이 질문에 대한 답변이 아직 FAQ에 없습니다.\n\n질문이 DB에 등록되었습니다. 답변이 추가되메 다음에는 바로 찾아드릴 수 있습니다.',
       extra: '<div class="pending-tag">⏳ 답변을 기다리고 있습니다</div>',
       meta: {}
     };
@@ -653,17 +908,23 @@ function filterRelevantFAQs(faqList, userQuery) {
 
 function extractKeywords(text) {
   const stopWords = new Set(['은', '는', '이', '가', '을', '를', '에', '에서', '으로', '로', '의', '도', '만',
-    '좀', '것', '수', '어떻게', '뭐', '어디', '언제', '왜', '누구', '어떤', '무엇',
+    '좀', '것', '수', '어떻게', '륐', '어디', '언제', '와', '누구', '어떄', '무엇',
     '해', '하', '해줘', '알려줘', '해주세요', '알려주세요', '입니다', '있나요', '있어요']);
 
   return text.replace(/[?!.,\s]+/g, ' ').trim().split(' ')
     .filter(w => w.length >= 2 && !stopWords.has(w));
 }
 
-async function callGeminiForFAQ(userQuery, faqList) {
+async function callGeminiForFAQ(userQuery, faqList, history) {
   if (!GEMINI_API_KEY) return null;
 
   const faqContext = faqList.map((f, i) => `FAQ #${i + 1}\n질문: ${f.question}\n답변: ${f.answer}`).join('\n\n');
+
+  let historyContext = '';
+  if (history && history.length > 0) {
+    historyContext = '\n\n최근 대화:\n' +
+      history.map(h => `사용자: ${h.user_message}\n봇: ${(h.bot_response || '').substring(0, 150)}`).join('\n');
+  }
 
   const prompt = `당신은 BLISS Lab 연구실 FAQ 챗봇입니다.
 
@@ -674,9 +935,11 @@ async function callGeminiForFAQ(userQuery, faqList) {
 2. 관련 FAQ가 없으면 반드시 "NO_MATCH"만 출력하세요.
 3. 답변할 때 FAQ 원문을 자연스럽게 재구성하되, 핵심 정보는 정확히 전달하세요.
 4. 답변 마지막에 [출처: FAQ N] 형식으로 참고한 FAQ 번호를 표시하세요.
+5. 이전 대화 맥락도 참고하여 자연스럽게 이어지도록 답변하세요.
 
 등록된 FAQ:
 ${faqContext}
+${historyContext}
 
 사용자 질문: ${userQuery}
 
@@ -733,18 +996,39 @@ function fail(answer) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// Self-keepalive (Render cold start 방지)
+// ═══════════════════════════════════════════════════════════
+function startKeepAlive() {
+  const INTERVAL = 14 * 60 * 1000; // 14분
+  setInterval(async () => {
+    try {
+      await fetch(`https://bliss-chatbot.onrender.com/api/health`);
+      console.log(`[KeepAlive] Ping at ${new Date().toISOString()}`);
+    } catch (err) {
+      console.error('[KeepAlive] Ping failed:', err.message);
+    }
+  }, INTERVAL);
+}
+
+// ═══════════════════════════════════════════════════════════
 // 서버 시작
 // ═══════════════════════════════════════════════════════════
 app.listen(PORT, async () => {
-  console.log(`\n🔬 BLISS Lab Chatbot v4.0 running on port ${PORT}`);
+  console.log(`\n🔬 BLISS Lab Chatbot v4.1 running on port ${PORT}`);
   console.log(`   http://localhost:${PORT}\n`);
 
   try {
     const dbCheck = await pool.query('SELECT NOW()');
     console.log('   ✅ Supabase connected:', dbCheck.rows[0].now);
     const faq = await getCachedFaq();
-    console.log(`   ✅ FAQ preloaded: ${faq.length} entries\n`);
+    console.log(`   ✅ FAQ preloaded: ${faq.length} entries`);
   } catch (err) {
     console.error('   ❌ DB connection failed:', err.message);
+  }
+
+  // Keepalive 시작 (production에서만)
+  if (process.env.RENDER) {
+    startKeepAlive();
+    console.log('   ✅ Self-keepalive enabled (14min interval)\n');
   }
 });
