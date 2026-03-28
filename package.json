@@ -1,0 +1,20 @@
+{
+  "name": "bliss-lab-chatbot",
+  "version": "4.0.0",
+  "description": "BLISS Lab FAQ Chatbot — Supabase + Gemini AI (ResearchFlow validation app)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "migrate": "node db/migrate.js",
+    "seed": "node db/seed.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "pg": "^8.13.1",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
