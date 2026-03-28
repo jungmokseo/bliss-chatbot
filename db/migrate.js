@@ -1,17 +1,17 @@
-// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-// BLISS Lab Chatbot â Supabase DB Migration
-// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ═══════════════════════════════════════════════════════════
+// BLISS Lab Chatbot — Supabase DB Migration v4.1
+// ═══════════════════════════════════════════════════════════
 // Run: node db/migrate.js
 // Creates all tables needed for the chatbot in Supabase PostgreSQL
 // Tables prefixed with 'chatbot_' to avoid conflicts with ResearchFlow
-// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ═══════════════════════════════════════════════════════════
 
 const { Pool } = require('pg');
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
-  console.error('â DATABASE_URL íê²½ë³ìê° ì¤ì ëì§ ìììµëë¤.');
+  console.error('❌ DATABASE_URL 환경변수가 설정되지 않았습니다.');
   process.exit(1);
 }
 
@@ -21,9 +21,9 @@ const pool = new Pool({
 });
 
 const MIGRATION_SQL = `
--- âââââââââââââââââââââââââââââââââââââââââââ
--- 1. êµ¬ì±ì (Jarvis Members)
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
+-- 1. 구성원 (Jarvis Members)
+-- ═══════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS chatbot_members (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
@@ -31,16 +31,16 @@ CREATE TABLE IF NOT EXISTS chatbot_members (
   researcher_id TEXT,
   email TEXT,
   phone TEXT,
-  role TEXT DEFAULT 'ëíìì',
+  role TEXT DEFAULT '대학원생',
   annual_leave INTEGER DEFAULT 12,
   active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- âââââââââââââââââââââââââââââââââââââââââââ
--- 2. í´ê° ê¸°ë¡
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
+-- 2. 휴가 기록
+-- ═══════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS chatbot_vacations (
   id SERIAL PRIMARY KEY,
   member_name TEXT NOT NULL,
@@ -55,9 +55,9 @@ CREATE TABLE IF NOT EXISTS chatbot_vacations (
 CREATE INDEX IF NOT EXISTS idx_vacations_member ON chatbot_vacations(member_name);
 CREATE INDEX IF NOT EXISTS idx_vacations_dates ON chatbot_vacations(start_date, end_date);
 
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
 -- 3. FAQ
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS chatbot_faq (
   id SERIAL PRIMARY KEY,
   question TEXT NOT NULL,
@@ -66,16 +66,16 @@ CREATE TABLE IF NOT EXISTS chatbot_faq (
   category TEXT,
   answered_by TEXT,
   answered_date DATE,
-  status TEXT DEFAULT 'ëµë³ìë£',
+  status TEXT DEFAULT '답변완료',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_faq_status ON chatbot_faq(status);
 
--- âââââââââââââââââââââââââââââââââââââââââââ
--- 4. ê³ì  ì ë³´ (Jarvis Accounts)
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
+-- 4. 계정 정보 (Jarvis Accounts)
+-- ═══════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS chatbot_accounts (
   id SERIAL PRIMARY KEY,
   service_name TEXT NOT NULL,
@@ -86,9 +86,9 @@ CREATE TABLE IF NOT EXISTS chatbot_accounts (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- âââââââââââââââââââââââââââââââââââââââââââ
--- 5. ê³¼ì  ì ë³´ (Jarvis Projects)
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
+-- 5. 과제 정보 (Jarvis Projects)
+-- ═══════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS chatbot_projects (
   id SERIAL PRIMARY KEY,
   project_name TEXT NOT NULL,
@@ -97,14 +97,14 @@ CREATE TABLE IF NOT EXISTS chatbot_projects (
   period TEXT,
   budget TEXT,
   pi TEXT,
-  status TEXT DEFAULT 'ì§íì¤',
+  status TEXT DEFAULT '진행중',
   memo TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- âââââââââââââââââââââââââââââââââââââââââââ
--- 6. ê·ì /ë§¤ë´ì¼ (Jarvis Regulations)
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
+-- 6. 규정/욤뉴얼 (Jarvis Regulations)
+-- ═══════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS chatbot_regulations (
   id SERIAL PRIMARY KEY,
   title TEXT NOT NULL,
@@ -114,9 +114,35 @@ CREATE TABLE IF NOT EXISTS chatbot_regulations (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- âââââââââââââââââââââââââââââââââââââââââââ
--- updated_at ìë ê°±ì  í¸ë¦¬ê±°
--- âââââââââââââââââââââââââââââââââââââââââââ
+-- ═══════════════════════════════════════════
+-- 7. 대화 히스토리 (v4.1 추가)
+-- ═══════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS chatbot_conversations (
+  id SERIAL PRIMARY KEY,
+  user_message TEXT NOT NULL,
+  bot_response TEXT,
+  intent TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_created ON chatbot_conversations(created_at DESC);
+
+-- ═══════════════════════════════════════════
+-- 8. 에러 로그 (v4.1 추가)
+-- ═══════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS chatbot_error_logs (
+  id SERIAL PRIMARY KEY,
+  endpoint TEXT,
+  error_message TEXT,
+  stack TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_logs_created ON chatbot_error_logs(created_at DESC);
+
+-- ═══════════════════════════════════════════
+-- updated_at 자동 갱신 트리거
+-- ═══════════════════════════════════════════
 CREATE OR REPLACE FUNCTION chatbot_update_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -141,21 +167,21 @@ END $$;
 async function migrate() {
   const client = await pool.connect();
   try {
-    console.log('ð Supabase DB ë§ì´ê·¸ë ì´ì ìì...');
+    console.log('🚀 Supabase DB 마이그레이션 시작 (v4.1)...');
     await client.query(MIGRATION_SQL);
-    console.log('â ëª¨ë  íì´ë¸ ìì± ìë£!');
+    console.log('✅ 모든 테이블 생성 완료!');
 
-    // íì´ë¸ ëª©ë¡ íì¸
+    // 테이블 목록 확인
     const res = await client.query(`
       SELECT tablename FROM pg_tables
       WHERE tablename LIKE 'chatbot_%'
       ORDER BY tablename
     `);
-    console.log('\nð ìì±ë íì´ë¸:');
+    console.log('\n📋 생성된 테이블:');
     res.rows.forEach(r => console.log(`   - ${r.tablename}`));
 
   } catch (err) {
-    console.error('â ë§ì´ê·¸ë ì´ì ì¤í¨:', err.message);
+    console.error('❌ 마이그레이션 실패:', err.message);
     throw err;
   } finally {
     client.release();
