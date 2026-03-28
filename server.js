@@ -2,7 +2,7 @@
 // BLISS Lab FAQ 챗봇 v4.1 — Supabase + Gemini AI
 // ResearchFlow Validation Application
 // + Server-side Auth, Conversation History, FAQ/Member CRUD,
-//   Error Logging, Self-Keepalive
+//   Error Logging (Railway deployment)
 // ═══════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -92,7 +92,7 @@ app.get('/api/health', (req, res) => {
 app.post('/api/auth/verify', (req, res) => {
   try {
     const { password } = req.body;
-    if (!password) return res.json({ success: false, error: '비밀번호를 찅력해주세요.' });
+    if (!password) return res.json({ success: false, error: '비밀번호를 입력해주세요.' });
 
     if (password !== CHATBOT_PASSWORD) {
       return res.json({ success: false, error: '비밀번호가 틀렸습니다.' });
@@ -449,27 +449,27 @@ async function classifyIntent(message, history) {
 
   const prompt = `당신은 한국 연구실 챗봇의 intent 분류기입니다.
 
-사용자 메시지를 분석하여 intent와 entity를 추추하세요.
+사용자 메시지를 분석하여 intent와 entity를 추출하세요.
 
 가능한 intent:
 - vacation_register: 휴가를 등록/신청/기록하려는 경우. "등록", "신청", "쓸게", "쓰겠습니다", "내다", "연차" 등의 표현 포함.
   예시: "정윤민 2월 27일 휴가 등록", "박시연 휴가 4월 15-17일 등록", "3월 5일 휴가 쓸게요 김태영", "김태영 3월 5일 연차"
-- vacation_query: 휴가 자여일/사용현황을 조회하려는 경우. "조회", "남았", "며칠", "확인", "현황", "얼마나" 등.
+- vacation_query: 휴가 잔여일/사용현황을 조회하려는 경우. "조회", "남았", "며칠", "확인", "현황", "얼마나" 등.
   예시: "홍길동 휴가 조회", "내 휴가 며칠 남았어?", "박시연 휴가 현황"
 - vacation_all: 전체 구성원의 휴가 현황 요약. "전체", "모든 사람" 등.
   예시: "전체 휴가 현황", "휴가 전체", "모든 학생 휴가"
-- member_info: 특정 구성원의 인적사항(m��번, 이메일, 전화번호, 연구자등록번호 등) 조회.
+- member_info: 특정 구성원의 인적사항(학번, 이메일, 전화번호, 연구자등록번호 등) 조회.
   예시: "김태영 학번", "이유림 이메일", "정윤민 연락처"
 - account_info: 연구실 공용 계정/비밀번호/로그인 정보 조회.
   예시: "아고다 계정", "SEM 예약 계정"
-- project_info: 연군과제 정보 조회.
+- project_info: 연구과제 정보 조회.
   예시: "현재 진행중인 과제", "NRF 과제번호"
 - regulation_info: 연구비/출장비/여비 규정 관련 질문.
   예시: "출장비 규정", "식대 한도"
 - faq_search: 위 어디에도 해당하지 않는 일반 질문.
 
 엔티티 추출 규칙:
-- name: 한국 이름 (2~4급자 한글) 또는 영문 이름. 메시지에서 사람 이름을 찾으세요.
+- name: 한국 이름 (2~4글자 한글) 또는 영문 이름. 메시지에서 사람 이름을 찾으세요.
 - start_date: YYYY-MM-DD 형식. 연도 없으면 ${year}년.
 - end_date: YYYY-MM-DD. 단일 날짜면 start_date와 동일. "15-17일"이면 start=15일, end=17일.
 - days: 시작~종료 포함 일수 (end - start + 1). 반드시 정확히 계산하세요.
@@ -500,7 +500,7 @@ ${historyContext}
 }
 
 // ═══════════════════════════════════════════════════════════
-// 휴가 관리 — SQL 기반 (핵시 안정성 보장)
+// 휴가 관리 — SQL 기반 (핵심 안정성 보장)
 // ═══════════════════════════════════════════════════════════
 
 async function handleVacationRegisterAI(entities, originalMessage) {
@@ -790,7 +790,7 @@ async function handleProjectInfo(entities, message) {
 async function handleRegulationInfo(entities, message) {
   let keyword = entities?.keyword || entities?.topic || '';
   if (!keyword) {
-    keyword = message.replace(/규정|매뉴얼|지침|알려줘|ǭ�야|어떻게|관련/g, '').trim();
+    keyword = message.replace(/규정|매뉴얼|지침|알려줘|뭐야|어떻게|관련/g, '').trim();
   }
   if (!keyword || keyword.length < 2) return fail('어떤 규정을 찾으시나요?\n\n예시: "출장비 규정" 또는 "식대 한도"');
 
@@ -814,7 +814,7 @@ async function handleRegulationInfo(entities, message) {
 
   return {
     success: true, matched: true, intent: 'regulation_info',
-    answer: `<strong>📖 규정/욤뉴얼</strong> — "${keyword}"\n\n${lines}`,
+    answer: `<strong>📖 규정/매뉴얼</strong> — "${keyword}"\n\n${lines}`,
     extra: '<div class="ai-tag">🔍 DB 검색</div>', meta: {}
   };
 }
@@ -840,7 +840,7 @@ async function handleFaqSearch(query, history) {
 
     return {
       success: true, matched: false,
-      answer: '이 질문에 대한 답변이 아직 FAQ에 없습니다.\n\n질문이 DB에 등록되었습니다. 답변이 추가되메 다음에는 바로 찾아드릴 수 있습니다.',
+      answer: '이 질문에 대한 답변이 아직 FAQ에 없습니다.\n\n질문이 DB에 등록되었습니다. 답변이 추가되면 다음에는 바로 찾아드릴 수 있습니다.',
       extra: '<div class="pending-tag">⏳ 답변을 기다리고 있습니다</div>',
       meta: {}
     };
@@ -908,7 +908,7 @@ function filterRelevantFAQs(faqList, userQuery) {
 
 function extractKeywords(text) {
   const stopWords = new Set(['은', '는', '이', '가', '을', '를', '에', '에서', '으로', '로', '의', '도', '만',
-    '좀', '것', '수', '어떻게', '륐', '어디', '언제', '와', '누구', '어떄', '무엇',
+    '좀', '것', '수', '어떻게', '뭐', '어디', '언제', '왜', '누구', '어떤', '무엇',
     '해', '하', '해줘', '알려줘', '해주세요', '알려주세요', '입니다', '있나요', '있어요']);
 
   return text.replace(/[?!.,\s]+/g, ' ').trim().split(' ')
@@ -996,21 +996,6 @@ function fail(answer) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Self-keepalive (Render cold start 방지)
-// ═══════════════════════════════════════════════════════════
-function startKeepAlive() {
-  const INTERVAL = 14 * 60 * 1000; // 14분
-  setInterval(async () => {
-    try {
-      await fetch(`https://bliss-chatbot.onrender.com/api/health`);
-      console.log(`[KeepAlive] Ping at ${new Date().toISOString()}`);
-    } catch (err) {
-      console.error('[KeepAlive] Ping failed:', err.message);
-    }
-  }, INTERVAL);
-}
-
-// ═══════════════════════════════════════════════════════════
 // 서버 시작
 // ═══════════════════════════════════════════════════════════
 app.listen(PORT, async () => {
@@ -1024,11 +1009,5 @@ app.listen(PORT, async () => {
     console.log(`   ✅ FAQ preloaded: ${faq.length} entries`);
   } catch (err) {
     console.error('   ❌ DB connection failed:', err.message);
-  }
-
-  // Keepalive 시작 (production에서만)
-  if (process.env.RENDER) {
-    startKeepAlive();
-    console.log('   ✅ Self-keepalive enabled (14min interval)\n');
   }
 });
