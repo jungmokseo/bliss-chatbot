@@ -1,6 +1,6 @@
 {
   "name": "bliss-lab-chatbot",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "BLISS Lab FAQ Chatbot — Supabase + Gemini AI (ResearchFlow validation app)",
   "main": "server.js",
   "scripts": {
