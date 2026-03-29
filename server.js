@@ -544,6 +544,23 @@ app.post('/api/admin/sync-notion', requireAdmin, async (req, res) => {
 });
 
 // ─── DB 현황 조회 API ─────────────────────
+// 개별 규정 항목 추가/업데이트 (삭제 없이 upsert)
+app.post('/api/admin/regulation', requireAdmin, async (req, res) => {
+  try {
+    const { title, content, category, source } = req.body;
+    if (!title) return res.json({ success: false, error: 'title required' });
+    // 같은 제목 있으면 업데이트, 없으면 삽입
+    await pool.query(`DELETE FROM chatbot_regulations WHERE title = $1`, [title]);
+    await pool.query(
+      `INSERT INTO chatbot_regulations (title, content, category, source) VALUES ($1, $2, $3, $4)`,
+      [title, content || null, category || null, source || null]
+    );
+    res.json({ success: true, message: `"${title}" 규정이 저장되었습니다.` });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 app.get('/api/admin/db-status', requireAdmin, async (req, res) => {
   try {
     const tables = ['chatbot_members', 'chatbot_projects', 'chatbot_accounts', 'chatbot_regulations', 'chatbot_faq', 'chatbot_vacations', 'chatbot_conversations', 'chatbot_error_logs'];
@@ -942,59 +959,145 @@ async function handleAccountInfo(entities, message) {
 
 async function handleProjectInfo(entities, message) {
   // ── 참여율 쿼리 감지 ──
-  const is참여율 = /참여율|참여|활성.*과제|과제.*목록/i.test(message);
+  const is참여율 = /참여율/i.test(message);
+  const is과제목록 = /활성.*과제|과제.*목록|과제.*현황/i.test(message);
   const monthMatch = message.match(/(\d{1,2})\s*월/) || (entities?.month ? [null, String(entities.month)] : null);
+  const year = new Date().getFullYear();
+  const monthNames = ['', '1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
 
   if (is참여율) {
+    let targetMonth = monthMatch ? parseInt(monthMatch[1]) : (new Date().getMonth() + 1);
+
+    // ① regulations 테이블에서 연도+참여율 항목 검색
+    const regResult = await pool.query(
+      `SELECT title, content FROM chatbot_regulations
+       WHERE title ILIKE '%참여율%'
+       ORDER BY created_at DESC LIMIT 1`
+    );
+
+    if (regResult.rows.length > 0) {
+      const reg = regResult.rows[0];
+      const rawLines = (reg.content || '').split(/\n|<br\s*\/?>/i).map(l => l.trim()).filter(Boolean);
+      const rates = [];
+      let totalPct = 0;
+
+      for (const line of rawLines) {
+        if (line.startsWith('총합')) continue; // 총합 줄은 스킵, 나중에 재계산
+        if (!line.includes('%') && !line.includes('없음')) continue;
+
+        const colonIdx = line.indexOf(':');
+        if (colonIdx < 0) continue;
+        const projectName = line.substring(0, colonIdx).trim();
+        const rateStr = line.substring(colonIdx + 1).trim();
+
+        // "매월 X%" → 항상 적용
+        const alwaysMatch = rateStr.match(/매월\s*(\d+)%/);
+        if (alwaysMatch) {
+          const pct = parseInt(alwaysMatch[1]);
+          rates.push({ name: projectName, pct, label: `${pct}%` });
+          totalPct += pct;
+          continue;
+        }
+
+        // 복합 형식 파싱: "1~2월 20%, 3월~ 10%" 또는 "1~2월 없음, 3월~ 매월 10%"
+        const segments = rateStr.split(',').map(s => s.trim());
+        let found = false;
+        for (const seg of segments) {
+          // "A~B월 X%" 또는 "A~B월 없음"
+          const rangeM = seg.match(/(\d+)\s*~\s*(\d+)\s*월\s*(없음|(\d+)%)/);
+          if (rangeM) {
+            const s = parseInt(rangeM[1]), e = parseInt(rangeM[2]);
+            if (targetMonth >= s && targetMonth <= e) {
+              if (rangeM[3] === '없음') {
+                rates.push({ name: projectName, pct: 0, label: '해당없음' });
+              } else {
+                const pct = parseInt(rangeM[4]);
+                rates.push({ name: projectName, pct, label: `${pct}%` });
+                totalPct += pct;
+              }
+              found = true; break;
+            }
+            continue;
+          }
+          // "A월~ X%" 또는 "A월~ 없음" 또는 "A월~ 매월 X%"
+          const fromM = seg.match(/(\d+)\s*월~\s*(없음|매월\s*(\d+)%|(\d+)%)/);
+          if (fromM) {
+            const s = parseInt(fromM[1]);
+            if (targetMonth >= s) {
+              if (fromM[2] === '없음') {
+                rates.push({ name: projectName, pct: 0, label: '해당없음' });
+              } else {
+                const pct = parseInt(fromM[3] || fromM[4]);
+                rates.push({ name: projectName, pct, label: `${pct}%` });
+                totalPct += pct;
+              }
+              found = true; break;
+            }
+            continue;
+          }
+        }
+        if (!found && segments.length > 0) {
+          // 파싱 실패 시 원문 그대로 표시
+          rates.push({ name: projectName, pct: 0, label: rateStr });
+        }
+      }
+
+      if (rates.length > 0) {
+        const lines = rates.map(r => `  • ${r.name}: <strong>${r.label}</strong>`).join('\n');
+        return {
+          success: true, matched: true, intent: 'project_info',
+          answer: `<strong>📊 ${year}년 ${monthNames[targetMonth]} 과제별 참여율</strong>\n\n${lines}\n\n<strong>합계: ${totalPct}%</strong>`,
+          extra: '<div class="ai-tag">🔍 DB 검색</div>', meta: {}
+        };
+      }
+    }
+
+    // ② regulations에서 못 찾으면 안내 메시지
+    return {
+      success: true, matched: true, intent: 'project_info',
+      answer: `참여율 데이터가 DB에 없습니다.\n\nCowork에서 "참여율 DB 동기화해줘"라고 말씀하시면 Notion 데이터를 자동으로 업데이트합니다.`,
+      extra: '', meta: {}
+    };
+  }
+
+  if (is과제목록) {
     const result = await pool.query(`SELECT * FROM chatbot_projects ORDER BY project_name`);
     if (result.rows.length === 0) return fail('등록된 과제 정보가 없습니다.');
 
     let targetMonth = monthMatch ? parseInt(monthMatch[1]) : (new Date().getMonth() + 1);
-    const year = new Date().getFullYear();
-    const monthNames = ['', '1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
 
-    // 해당 월에 활성인 과제 필터링 (period 파싱)
+    const parseDate = (s) => {
+      s = s.replace(/\./g, '-').trim();
+      if (/^\d{2}-/.test(s)) s = '20' + s;
+      if (/^\d{4}$/.test(s)) return new Date(parseInt(s), 0, 1);
+      const d = new Date(s);
+      return isNaN(d.getTime()) ? null : d;
+    };
+
     const active = result.rows.filter(r => {
-      if (!r.period) return true; // 기간 정보 없으면 포함
+      if (!r.period) return false; // 기간 정보 없으면 제외 (불명확)
       try {
-        // "25.09.01 ~ 28.08.31" or "2021 ~ 2025.12.31" 등 다양한 형식 처리
-        const parts = r.period.split(/~|-/).map(s => s.trim());
+        const parts = r.period.split(/~/).map(s => s.trim());
         if (parts.length < 2) return true;
-
-        const parseDate = (s) => {
-          s = s.replace(/\./g, '-').trim();
-          if (/^\d{2}-/.test(s)) s = '20' + s; // 25- → 2025-
-          if (/^\d{4}$/.test(s)) return new Date(parseInt(s), 0, 1); // "2021" → Jan 1
-          const d = new Date(s);
-          return isNaN(d.getTime()) ? null : d;
-        };
-
         const startDate = parseDate(parts[0]);
         const endDate = parseDate(parts[1]);
         if (!startDate || !endDate) return true;
-
-        const checkDate = new Date(year, targetMonth - 1, 15); // 해당 월 중간
+        const checkDate = new Date(year, targetMonth - 1, 15);
         return checkDate >= startDate && checkDate <= endDate;
       } catch { return true; }
     });
 
-    if (active.length === 0) {
-      return { success: true, matched: true, intent: 'project_info',
-        answer: `${year}년 ${monthNames[targetMonth]}에 활성인 과제가 없습니다.`, extra: '', meta: {} };
-    }
-
-    const lines = active.map((r, i) => {
+    const lines = (active.length > 0 ? active : result.rows).map((r, i) => {
       const parts = [`<strong>${i + 1}. ${r.project_name}</strong>`];
       if (r.funding_agency) parts.push(`   지원기관: ${r.funding_agency}`);
       if (r.period) parts.push(`   기간: ${r.period}`);
       if (r.pi) parts.push(`   담당자: ${r.pi}`);
-      if (r.memo) parts.push(`   사업명: ${r.memo}`);
       return parts.join('\n');
     }).join('\n\n');
 
     return {
       success: true, matched: true, intent: 'project_info',
-      answer: `<strong>📋 ${year}년 ${monthNames[targetMonth]} 활성 과제 (${active.length}건/${result.rows.length}건)</strong>\n\n${lines}\n\n<em>※ 과제별 세부 참여율(%)은 현재 DB에 미등록 상태입니다. 필요 시 Notion 과제 DB에 참여율 컬럼을 추가하면 자동 연동됩니다.</em>`,
+      answer: `<strong>📋 ${year}년 ${monthNames[targetMonth]} 활성 과제 (${active.length}건)</strong>\n\n${lines}`,
       extra: '<div class="ai-tag">🔍 DB 검색</div>', meta: {}
     };
   }
