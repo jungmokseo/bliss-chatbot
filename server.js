@@ -8,7 +8,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const fetch = require('node-fetch');
-const path = require('path');
+const path = require('path')
 const crypto = require('crypto');
 
 const app = express();
@@ -991,7 +991,7 @@ async function handleProjectInfo(entities, message) {
         const rateStr = line.substring(colonIdx + 1).trim();
 
         // "매월 X%" → 항상 적용
-        const alwaysMatch = rateStr.match(/매월\s*(\d+)%/);
+        const alwaysMatch = rateStr.match(/^매월\s*(\d+)%$/);
         if (alwaysMatch) {
           const pct = parseInt(alwaysMatch[1]);
           rates.push({ name: projectName, pct, label: `${pct}%` });
