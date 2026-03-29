@@ -165,7 +165,7 @@
     </div>
     <div class="header-actions">
       <button onclick="openAdmin()">관리</button>
-      <button onclick="openHelp()">삠용법</button>
+      <button onclick="openHelp()">사용법</button>
     </div>
   </div>
 
@@ -218,6 +218,7 @@
     <div class="admin-tab" data-tab="members" onclick="switchTab('members')">구성원</div>
     <div class="admin-tab" data-tab="conversations" onclick="switchTab('conversations')">대화 로그</div>
     <div class="admin-tab" data-tab="errors" onclick="switchTab('errors')">에러 로그</div>
+    <div class="admin-tab" data-tab="dbstatus" onclick="switchTab('dbstatus')">DB 현황</div>
   </div>
   <div class="admin-body" id="admin-body"></div>
 </div>
@@ -519,7 +520,34 @@ function closeHelp(e) { if (e.target === document.getElementById('help-panel')) 
 // ═══════════════════════════════════════════
 let currentAdminTab = 'dashboard';
 
-function openAdmin() { document.getElementById('admin-panel').classList.add('active'); switchTab('dashboard'); }
+let isAdminAuthed = false;
+
+async function openAdmin() {
+  if (isAdminAuthed) {
+    document.getElementById('admin-panel').classList.add('active');
+    switchTab('dashboard');
+    return;
+  }
+  const pw = prompt('관리자 비밀번호를 입력하세요:');
+  if (!pw) return;
+  try {
+    const resp = await fetch('/api/auth/admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken },
+      body: JSON.stringify({ password: pw })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      isAdminAuthed = true;
+      document.getElementById('admin-panel').classList.add('active');
+      switchTab('dashboard');
+    } else {
+      alert(data.error || '관리자 인증 실패');
+    }
+  } catch (e) {
+    alert('서버 연결 실패');
+  }
+}
 function closeAdmin() { document.getElementById('admin-panel').classList.remove('active'); }
 
 function switchTab(tab) {
@@ -539,6 +567,7 @@ async function loadAdminTab(tab) {
       case 'members': await loadMembersAdmin(body); break;
       case 'conversations': await loadConversations(body); break;
       case 'errors': await loadErrors(body); break;
+      case 'dbstatus': await loadDbStatus(body); break;
     }
   } catch (err) {
     body.innerHTML = `<div class="admin-empty">데이터를 불러올 수 없습니다: ${err.message}</div>`;
@@ -715,6 +744,38 @@ async function loadErrors(body) {
           </tr>
         `).join('')}
       </table>`}
+    </div>`;
+}
+
+async function loadDbStatus(body) {
+  const data = await apiFetch('/api/admin/db-status');
+  const counts = data.counts || {};
+  const tableNames = {
+    chatbot_members: '👤 구성원',
+    chatbot_projects: '📋 과제 정보',
+    chatbot_accounts: '🔑 계정 정보',
+    chatbot_regulations: '📖 규정/매뉴얼',
+    chatbot_faq: '❓ FAQ',
+    chatbot_vacations: '🏖️ 휴가',
+    chatbot_conversations: '💬 대화 로그',
+    chatbot_error_logs: '🚨 에러 로그'
+  };
+
+  body.innerHTML = `
+    <div class="admin-card">
+      <h3>📊 Supabase DB 현황</h3>
+      <table class="admin-table">
+        <tr><th>테이블</th><th style="text-align:right">레코드 수</th></tr>
+        ${Object.entries(counts).map(([t, c]) => `
+          <tr>
+            <td>${tableNames[t] || t}</td>
+            <td style="text-align:right; font-weight:bold">${c}건</td>
+          </tr>
+        `).join('')}
+      </table>
+      <div style="margin-top:16px; padding:12px; background:#f0f7ff; border-radius:8px; font-size:13px; color:#555;">
+        💡 <strong>DB 동기화 방법:</strong> Notion에서 데이터를 수정한 후, Cowork에서 "DB 동기화해줘" 또는 "규정 DB 업데이트해줘"라고 말씀하시면 자동으로 Notion → Supabase 동기화가 진행됩니다.
+      </div>
     </div>`;
 }
 </script>
