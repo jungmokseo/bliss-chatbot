@@ -147,7 +147,7 @@
   <div class="pw-box">
     <div class="icon">🔬</div>
     <h2>BLISS Lab</h2>
-    <p>연구실 구성원 전용 FAQ 챗봇입니다</p>
+    <p>연구실 구성원 전용 FAQ 챗봌입니다</p>
     <div class="pw-input-wrap">
       <input type="password" id="pw-input" placeholder="비밀번호 입력" autocomplete="off">
       <button onclick="checkPassword()">입장</button>
@@ -198,7 +198,7 @@
     <div class="help-item"><div class="cmd">일반 질문</div><div class="desc">궁금한 것을 자유롭게 질문하세요. Gemini AI가 등록된 FAQ 기반으로 답변합니다.</div></div>
     <div class="help-item"><div class="cmd">휴가 조회</div><div class="desc">"홍길동 휴가 조회" 또는 "홍길동 휴가 며칠 남았어?"</div></div>
     <div class="help-item"><div class="cmd">휴가 등록</div><div class="desc">"📝 휴가등록" 버튼 → 이름/날짜 입력, 또는 "홍길동 휴가 4월 15-17일 등록"</div></div>
-    <div class="help-item"><div class="cmd">휴가 취소</div><div class="desc">"❌ 휴가취소" 버튼 → 이름 입력 → 취소할 휴가 선택</div></div>
+    <div class="help-item"><div class="cmd">휴가 취솄</div><div class="desc">"❌ 휴가취소" 버튼 → 이름 입력 → 취소할 휴가 선택</div></div>
     <div class="help-item"><div class="cmd">인적사항</div><div class="desc">"이름 학번", "이름 이메일", "이름 연구자등록번호"</div></div>
     <div class="help-item"><div class="cmd">과제 정보</div><div class="desc">"과제 정보" 또는 "NRF 과제번호"</div></div>
     <div class="help-item"><div class="cmd">계정 정보</div><div class="desc">"아고다 계정" 또는 "SEM 예약 로그인"</div></div>
@@ -469,7 +469,7 @@ function addUserMessage(text) {
       <div class="msg-avatar">👤</div>
       <div>
         <div class="msg-bubble">${escapeHtml(text)}</div>
-        <div class="msg-time">${now}</div>
+        <div class="msg-time">${now}</dit>
       </div>
     </div>`;
   container.scrollTop = container.scrollHeight;
@@ -590,7 +590,7 @@ async function loadDashboard(body) {
         <div class="admin-stat"><div class="num">${faqData.count || 0}</div><div class="label">FAQ 항목</div></div>
         <div class="admin-stat"><div class="num">${memberData.members?.length || 0}</div><div class="label">구성원</div></div>
         <div class="admin-stat"><div class="num">${convData.count || 0}</div><div class="label">대화 기록</div></div>
-        <div class="admin-stat"><div class="num">${unansData.count || 0}</div><div class="label">미답변 질문</div></div>
+        <div class="admin-stat"><div class="num">${unansData.count || 0}</div><div class="label">민답변 질문</div></div>
         <div class="admin-stat"><div class="num">${errData.count || 0}</div><div class="label">에러 로그</div></div>
       </div>
     </div>
@@ -754,7 +754,7 @@ async function loadDbStatus(body) {
     chatbot_members: '👤 구성원',
     chatbot_projects: '📋 과제 정보',
     chatbot_accounts: '🔑 계정 정보',
-    chatbot_regulations: '📖 규정/매뉴얼',
+    chatbot_regulations: '📖 규정/욤뉴얼',
     chatbot_faq: '❓ FAQ',
     chatbot_vacations: '🏖️ 휴가',
     chatbot_conversations: '💬 대화 로그',
