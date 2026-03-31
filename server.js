@@ -456,7 +456,8 @@ app.post('/api/admin/sync-notion', requireAdmin, async (req, res) => {
 
     // regulations 동기화 (프론트엔드에서 데이터 전달)
     if (target === 'regulations' || target === 'all') {
-      if (req.body.regulations && Array.isArray(req.body.regulations)) {
+      if (req.body.regulations && Array.isArray(req.body.regulations) && req.body.regulations.length > 0) {
+        // ★ 빈 배열이면 전체 삭제 방지
         await pool.query('DELETE FROM chatbot_regulations');
         let count = 0;
         for (const r of req.body.regulations) {
@@ -617,6 +618,13 @@ async function handleMessage(message, history) {
     return await handleFaqSearch(message, history);
   }
 
+  // ★ confidence 기반 안전장치: 낮은 confidence면 FAQ로 폴백
+  const confidence = classification.confidence || 0;
+  if (confidence < 0.5 && classification.intent !== 'faq_search') {
+    console.log(`[Intent] Low confidence (${confidence}) for "${classification.intent}", falling back to FAQ`);
+    return await handleFaqSearch(message, history);
+  }
+
   // Step 2: intent별 실행
   switch (classification.intent) {
     case 'vacation_register':
@@ -726,24 +734,60 @@ async function handleVacationRegisterAI(entities, originalMessage) {
 }
 
 async function vacationRegister(name, startDate, endDate, days, memo) {
+  // ★ 검증 1: days 유효성
+  const numDays = parseInt(days);
+  if (!numDays || numDays <= 0 || numDays > 30) {
+    return fail(`휴가 일수가 올바르지 않습니다 (입력: ${days}일). 1~30일 범위로 등록해주세요.`);
+  }
+
+  // ★ 검증 2: 날짜 유효성
+  const sDate = new Date(startDate);
+  const eDate = new Date(endDate);
+  if (isNaN(sDate.getTime()) || isNaN(eDate.getTime())) {
+    return fail(`날짜 형식이 올바르지 않습니다.\n\n예시: "정윤민 3월 27일 휴가 등록"`);
+  }
+  if (eDate < sDate) {
+    return fail(`종료일(${endDate})이 시작일(${startDate})보다 앞설 수 없습니다.`);
+  }
+
+  // ★ 검증 3: 멤버 존재 확인
+  const memberCheck = await pool.query(
+    `SELECT name FROM chatbot_members WHERE name ILIKE $1 AND active = true LIMIT 1`,
+    [`%${name}%`]
+  );
+  if (memberCheck.rows.length === 0) {
+    return fail(`"${name}" 님이 구성원 DB에 등록되어 있지 않습니다. 정확한 이름을 확인해주세요.`);
+  }
+  const exactName = memberCheck.rows[0].name; // DB의 정확한 이름 사용
+
+  // ★ 검증 4: 중복 등록 방지
+  const dupCheck = await pool.query(
+    `SELECT id FROM chatbot_vacations
+     WHERE member_name = $1 AND start_date = $2 AND end_date = $3 AND cancelled = false`,
+    [exactName, startDate, endDate]
+  );
+  if (dupCheck.rows.length > 0) {
+    return fail(`${exactName} 님의 ${startDate} ~ ${endDate} 휴가가 이미 등록되어 있습니다.`);
+  }
+
   await pool.query(
     `INSERT INTO chatbot_vacations (member_name, start_date, end_date, days, memo)
      VALUES ($1, $2, $3, $4, $5)`,
-    [name, startDate, endDate, days, memo || null]
+    [exactName, startDate, endDate, numDays, memo || null]
   );
 
-  const stats = await getVacationStats(name);
+  const stats = await getVacationStats(exactName);
 
   const sm = parseInt(startDate.split('-')[1]);
   const sd = parseInt(startDate.split('-')[2]);
   const ed = parseInt(endDate.split('-')[2]);
   const dateStr = (startDate === endDate)
     ? `${sm}월 ${sd}일 (1일)`
-    : `${sm}월 ${sd}일 ~ ${ed}일 (${days}일)`;
+    : `${sm}월 ${sd}일 ~ ${ed}일 (${numDays}일)`;
 
   return {
     success: true, matched: true, intent: 'vacation_register',
-    answer: `<strong>${name}</strong> 님의 휴가가 등록되었습니다.\n\n📅 기간: ${dateStr}\n📊 연간 ${stats.annual}일 중 ${stats.used}일 사용 → <strong>잔여 ${stats.remaining}일</strong>`,
+    answer: `<strong>${exactName}</strong> 님의 휴가가 등록되었습니다.\n\n📅 기간: ${dateStr}\n📊 연간 ${stats.annual}일 중 ${stats.used}일 사용 → <strong>잔여 ${stats.remaining}일</strong>`,
     extra: '<div class="registered-tag">✅ DB에 등록 완료</div>',
     meta: { registered: true },
     annual: stats.annual, usedDays: stats.used, remaining: stats.remaining
@@ -1075,16 +1119,16 @@ async function handleProjectInfo(entities, message) {
     };
 
     const active = result.rows.filter(r => {
-      if (!r.period) return false; // 기간 정보 없으면 제외 (불명확)
+      if (!r.period) return false; // ★ 기간 정보 없으면 제외
       try {
         const parts = r.period.split(/~/).map(s => s.trim());
-        if (parts.length < 2) return true;
+        if (parts.length < 2) return false; // ★ 불완전한 기간 형식 → 제외 (안전)
         const startDate = parseDate(parts[0]);
         const endDate = parseDate(parts[1]);
-        if (!startDate || !endDate) return true;
+        if (!startDate || !endDate) return false; // ★ 파싱 실패 → 제외 (안전)
         const checkDate = new Date(year, targetMonth - 1, 15);
         return checkDate >= startDate && checkDate <= endDate;
-      } catch { return true; }
+      } catch { return false; } // ★ 에러 시 제외 (안전)
     });
 
     const lines = (active.length > 0 ? active : result.rows).map((r, i) => {
@@ -1160,6 +1204,7 @@ async function handleRegulationInfo(entities, message) {
     return { success: true, matched: false, answer: `"${keyword}" 관련 규정을 찾을 수 없습니다.`, extra: '', meta: {} };
   }
 
+  const total = result.rows.length;
   const lines = result.rows.slice(0, 5).map(r => {
     const parts = [`<strong>${r.title}</strong>`];
     if (r.content) parts.push(r.content);
@@ -1167,9 +1212,11 @@ async function handleRegulationInfo(entities, message) {
     return parts.join('\n');
   }).join('\n\n---\n\n');
 
+  const moreInfo = total > 5 ? `\n\n<em>총 ${total}건 중 5건 표시. 더 구체적인 키워드로 검색해보세요.</em>` : '';
+
   return {
     success: true, matched: true, intent: 'regulation_info',
-    answer: `<strong>📖 규정/매뉴얼</strong> — "${keyword}"\n\n${lines}`,
+    answer: `<strong>📖 규정/매뉴얼</strong> — "${keyword}"\n\n${lines}${moreInfo}`,
     extra: '<div class="ai-tag">🔍 DB 검색</div>', meta: {}
   };
 }
@@ -1281,16 +1328,16 @@ async function callGeminiForFAQ(userQuery, faqList, history) {
       history.map(h => `사용자: ${h.user_message}\n봇: ${(h.bot_response || '').substring(0, 150)}`).join('\n');
   }
 
-  const prompt = `당신은 BLISS Lab 연구실 FAQ 챗봇입니다.
-
-아래 등록된 FAQ 목록을 참고하여 사용자 질문에 답변하세요.
+  // ★ 할루시네이션 방지: Gemini는 FAQ 번호만 선택, 답변은 FAQ 원문 사용
+  const prompt = `당신은 FAQ 매칭 시스템입니다. 사용자 질문과 가장 관련성 높은 FAQ를 선택하세요.
 
 규칙:
-1. 반드시 FAQ에 등록된 내용만 기반으로 답변하세요.
-2. 관련 FAQ가 없으면 반드시 "NO_MATCH"만 출력하세요.
-3. 답변할 때 FAQ 원문을 자연스럽게 재구성하되, 핵심 정보는 정확히 전달하세요.
-4. 답변 마지막에 [출처: FAQ N] 형식으로 참고한 FAQ 번호를 표시하세요.
-5. 이전 대화 맥락도 참고하여 자연스럽게 이어지도록 답변하세요.
+1. 아래 FAQ 목록에서 사용자 질문과 관련된 FAQ 번호를 선택하세요.
+2. 관련 FAQ가 전혀 없으면 반드시 {"match": false}만 출력하세요.
+3. 관련 FAQ가 있으면 {"match": true, "faqIndex": N, "confidence": 0.0~1.0}을 출력하세요.
+4. N은 FAQ 번호(1부터 시작)입니다.
+5. 절대로 답변을 직접 생성하지 마세요. FAQ 번호만 선택하세요.
+6. confidence가 0.5 미만이면 match를 false로 설정하세요.
 
 등록된 FAQ:
 ${faqContext}
@@ -1298,21 +1345,32 @@ ${historyContext}
 
 사용자 질문: ${userQuery}
 
-답변:`;
+반드시 JSON만 출력:`;
 
   try {
-    const answer = await geminiCall(prompt, 0.3, 800);
+    const answer = await geminiCall(prompt, 0.1, 200);
     if (!answer) return null;
 
-    if (answer === 'NO_MATCH' || answer.includes('NO_MATCH')) {
+    const jsonMatch = answer.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { answer: 'NO_MATCH' };
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    if (!parsed.match || parsed.faqIndex === undefined) {
       return { answer: 'NO_MATCH' };
     }
 
-    const srcMatch = answer.match(/\[출처:\s*FAQ\s*(\d+)\]/);
-    const sourceIndex = srcMatch ? parseInt(srcMatch[1]) - 1 : undefined;
-    const cleanAnswer = answer.replace(/\[출처:\s*FAQ\s*[\d,\s]+\]/g, '').trim();
+    const idx = parseInt(parsed.faqIndex) - 1;
+    if (idx < 0 || idx >= faqList.length) {
+      return { answer: 'NO_MATCH' };
+    }
 
-    return { answer: cleanAnswer, sourceIndex };
+    const matchedFaq = faqList[idx];
+    // ★ FAQ 원문 답변을 그대로 사용 → 할루시네이션 0%
+    const faqAnswer = matchedFaq.answer || '';
+    if (!faqAnswer.trim()) return { answer: 'NO_MATCH' };
+
+    return { answer: faqAnswer, sourceIndex: idx };
   } catch (err) {
     console.error('callGeminiForFAQ error:', err.message);
     return null;
