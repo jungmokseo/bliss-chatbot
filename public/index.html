@@ -3,6 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<!-- PWA Meta Tags -->
+<meta name="theme-color" content="#4A6CF7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="BLISS FAQ">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <title>BLISS Lab FAQ</title>
 <style>
   :root {
@@ -138,6 +146,41 @@
   @media (max-width: 480px) {
     .pw-box { padding: 36px 24px; }
     .msg { max-width: 92%; }
+  }
+
+  /* PWA: 모바일 dvh 대응 */
+  @supports (height: 100dvh) {
+    body, #chat-screen { height: 100dvh; }
+  }
+
+  /* PWA: standalone 모드 safe-area (iPhone 노치) */
+  @media (display-mode: standalone) {
+    body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  }
+
+  /* PWA 설치 배너 */
+  .pwa-install-banner {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: white; padding: 16px 20px; z-index: 9999;
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.12);
+    border-radius: 20px 20px 0 0;
+    transform: translateY(100%);
+    transition: transform 0.4s cubic-bezier(0.16,1,0.3,1);
+    display: flex; align-items: center; gap: 14px;
+  }
+  .pwa-install-banner.show { transform: translateY(0); }
+  .pwa-install-banner .pwa-icon { width: 48px; height: 48px; border-radius: 12px; flex-shrink: 0; }
+  .pwa-install-banner .pwa-text { flex: 1; }
+  .pwa-install-banner .pwa-text strong { font-size: 14px; display: block; margin-bottom: 2px; }
+  .pwa-install-banner .pwa-text span { font-size: 12px; color: #64748B; }
+  .pwa-install-btn {
+    padding: 10px 20px; background: #4A6CF7; color: white; border: none;
+    border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer;
+    white-space: nowrap;
+  }
+  .pwa-close-btn {
+    position: absolute; top: 8px; right: 12px;
+    background: none; border: none; font-size: 18px; color: #94A3B8; cursor: pointer;
   }
 </style>
 </head>
@@ -778,6 +821,93 @@ async function loadDbStatus(body) {
       </div>
     </div>`;
 }
+</script>
+
+<!-- PWA 설치 배너 -->
+<div class="pwa-install-banner" id="pwa-banner">
+  <button class="pwa-close-btn" onclick="closePwaBanner()">&times;</button>
+  <img src="icons/icon-96.png" class="pwa-icon" alt="BLISS FAQ">
+  <div class="pwa-text">
+    <strong>BLISS Lab FAQ</strong>
+    <span id="pwa-install-guide">홈 화면에 추가하고 앱처럼 사용하세요</span>
+  </div>
+  <button class="pwa-install-btn" id="pwa-install-btn" onclick="installPwa()">설치</button>
+</div>
+
+<script>
+// ═══ PWA Service Worker 등록 ═══
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js')
+      .then(reg => console.log('[PWA] SW registered:', reg.scope))
+      .catch(err => console.log('[PWA] SW failed:', err));
+  });
+}
+
+// ═══ Android: beforeinstallprompt ═══
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  showPwaBanner('android');
+});
+
+function installPwa() {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(choice => {
+      if (choice.outcome === 'accepted') console.log('[PWA] Installed');
+      deferredPrompt = null;
+      closePwaBanner();
+    });
+  } else if (isIOS()) {
+    // iOS는 네이티브 설치 불가 → 안내만
+    closePwaBanner();
+  }
+}
+
+// ═══ iOS 감지 & 안내 ═══
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+}
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+window.addEventListener('load', () => {
+  if (isIOS() && !isStandalone() && !localStorage.getItem('pwa-banner-closed')) {
+    setTimeout(() => showPwaBanner('ios'), 3000);
+  }
+});
+
+// ═══ 배너 표시/닫기 ═══
+function showPwaBanner(platform) {
+  if (isStandalone()) return; // 이미 앱으로 실행 중이면 표시 안 함
+  if (localStorage.getItem('pwa-banner-closed')) return;
+
+  const banner = document.getElementById('pwa-banner');
+  const guide = document.getElementById('pwa-install-guide');
+  const btn = document.getElementById('pwa-install-btn');
+
+  if (platform === 'ios') {
+    guide.innerHTML = 'Safari 하단 <strong>공유(↑)</strong> → <strong>홈 화면에 추가</strong>';
+    btn.textContent = '확인';
+    btn.onclick = closePwaBanner;
+  }
+  setTimeout(() => banner.classList.add('show'), 500);
+}
+
+function closePwaBanner() {
+  const banner = document.getElementById('pwa-banner');
+  banner.classList.remove('show');
+  localStorage.setItem('pwa-banner-closed', '1');
+}
+
+// 앱 설치 완료 감지
+window.addEventListener('appinstalled', () => {
+  console.log('[PWA] App installed!');
+  closePwaBanner();
+});
 </script>
 </body>
 </html>

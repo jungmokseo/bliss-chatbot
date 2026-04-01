@@ -1,0 +1,21 @@
+{
+  "name": "BLISS Lab FAQ 챗봇",
+  "short_name": "BLISS FAQ",
+  "description": "BLISS Lab 연구실 FAQ 챗봇 — 과제, 계정, 규정, 인적사항 등 연구실 정보를 빠르게 검색합니다.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#4A6CF7",
+  "background_color": "#4A6CF7",
+  "lang": "ko",
+  "icons": [
+    { "src": "icons/icon-72.png",  "sizes": "72x72",   "type": "image/png" },
+    { "src": "icons/icon-96.png",  "sizes": "96x96",   "type": "image/png" },
+    { "src": "icons/icon-128.png", "sizes": "128x128", "type": "image/png" },
+    { "src": "icons/icon-144.png", "sizes": "144x144", "type": "image/png" },
+    { "src": "icons/icon-152.png", "sizes": "152x152", "type": "image/png" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-384.png", "sizes": "384x384", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
