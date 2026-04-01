@@ -969,6 +969,8 @@ async function handleMemberInfo(entities, message) {
 
 async function handleAccountInfo(entities, message) {
   let keyword = entities?.keyword || entities?.service || '';
+  // entity에서도 불필요한 단어 정리
+  keyword = keyword.replace(/계정|비밀번호|비번|로그인|아이디|패스워드|정보|알려줘|뭐야|어떻게|의\s*/g, '').trim();
   if (!keyword) {
     keyword = message.replace(/계정|비밀번호|비번|로그인|아이디|패스워드|정보|알려줘|뭐야|어떻게/g, '').trim();
   }
