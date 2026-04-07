@@ -1369,7 +1369,7 @@ ${historyContext}
 반드시 JSON만 출력:`;
 
   try {
-    const answer = await geminiCall(prompt, 0.1, 1024);
+    const answer = await geminiCall(prompt, 0.1, 8192);
     if (!answer) return null;
 
     const jsonMatch = answer.match(/\{[\s\S]*\}/);
@@ -1401,7 +1401,7 @@ ${historyContext}
 // ═══════════════════════════════════════════════════════════
 // Gemini API 호출 유틸리티
 // ═══════════════════════════════════════════════════════════
-async function geminiCall(prompt, temperature = 0.1, maxTokens = 2048) {
+async function geminiCall(prompt, temperature = 0.1, maxTokens = 8192) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
   try {
