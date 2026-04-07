@@ -1369,7 +1369,7 @@ ${historyContext}
 반드시 JSON만 출력:`;
 
   try {
-    const answer = await geminiCall(prompt, 0.1, 200);
+    const answer = await geminiCall(prompt, 0.1, 1024);
     if (!answer) return null;
 
     const jsonMatch = answer.match(/\{[\s\S]*\}/);
@@ -1401,7 +1401,7 @@ ${historyContext}
 // ═══════════════════════════════════════════════════════════
 // Gemini API 호출 유틸리티
 // ═══════════════════════════════════════════════════════════
-async function geminiCall(prompt, temperature = 0.1, maxTokens = 300) {
+async function geminiCall(prompt, temperature = 0.1, maxTokens = 2048) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
   try {
@@ -1410,7 +1410,7 @@ async function geminiCall(prompt, temperature = 0.1, maxTokens = 300) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature, maxOutputTokens: maxTokens }
+        generationConfig: { temperature, maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } }
       })
     });
 
@@ -1436,7 +1436,7 @@ function fail(answer) {
   return { success: true, matched: false, answer, extra: '', meta: {} };
 }
 
-// ═══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
 // 서버 시작
 // ═══════════════════════════════════════════════════════════
 app.listen(PORT, async () => {
