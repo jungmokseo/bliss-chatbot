@@ -1410,7 +1410,7 @@ async function geminiCall(prompt, temperature = 0.1, maxTokens = 2048) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature, maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } }
+        generationConfig: { temperature, maxOutputTokens: maxTokens }, thinkingConfig: { thinkingBudget: 0 }
       })
     });
 
