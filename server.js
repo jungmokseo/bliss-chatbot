@@ -7,7 +7,7 @@
 
 const express = require('express');
 const { Pool } = require('pg');
-const fetch = require('node-fetch')
+const fetch = require('noe-fetch')
 const path = require('path')
 const crypto = require('crypto');
 
@@ -721,7 +721,7 @@ ${historyContext}
 메시지: ${message}`;
 
   try {
-    const resp = await geminiCall(prompt, 0.1, 300);
+    const resp = await geminiCall(prompt, 0.1, 8192);
     if (!resp) return null;
 
     const jsonMatch = resp.match(/\{[\s\S]*\}/);
