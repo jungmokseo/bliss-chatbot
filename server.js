@@ -7,7 +7,7 @@
 
 const express = require('express');
 const { Pool } = require('pg');
-const fetch = require('noe-fetch')
+const fetch = require('node-fetch')
 const path = require('path')
 const crypto = require('crypto');
 
